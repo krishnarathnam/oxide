@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
+    hash::Hash,
     io,
     path::{Path, PathBuf},
     process::exit,
@@ -22,10 +23,26 @@ impl<'a> Lexer<'a> {
             self.content = &self.content[1..];
         }
     }
+
+    fn chop(&mut self, n: usize) -> &'a [char] {
+        let token = &self.content[0..n];
+        self.content = &self.content[n..];
+        token
+    }
+
     fn next_token(&mut self) -> Option<&'a [char]> {
         self.trim_left_whitespace();
         if self.content.len() == 0 {
             return None;
+        }
+
+        if self.content[0].is_numeric() {
+            let mut n = 0;
+            while n < self.content.len() && self.content[n].is_alphanumeric() {
+                n += 1;
+            }
+
+            return Some(self.chop(n));
         }
 
         if self.content[0].is_alphabetic() {
@@ -34,12 +51,10 @@ impl<'a> Lexer<'a> {
                 n += 1;
             }
 
-            let result = &self.content[0..n];
-            self.content = &self.content[n..];
-            return Some(result);
+            return Some(self.chop(n));
         }
 
-        todo!()
+        return Some(self.chop(1));
     }
 }
 
@@ -80,23 +95,37 @@ fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
 }
 
 fn main() -> io::Result<()> {
-    let file_path = "./docs.gl/gl3/glActiveTexture.xhtml";
-    let document = read_entire_xml_file(file_path)?.chars().collect::<Vec<_>>();
+    let file_path = "./docs.gl/gl4";
+    let dir = fs::read_dir(file_path)?;
+    let top_n = 20;
 
-    for lexer in Lexer::new(&document) {
-        println!("{lexer}", lexer = lexer.iter().collect::<String>());
+    for file in dir {
+        let file = file?.path();
+        let document = read_entire_xml_file(&file)?.chars().collect::<Vec<_>>();
+
+        let mut tf = HashMap::<String, usize>::new();
+
+        for lexer in Lexer::new(&document) {
+            let term = lexer
+                .iter()
+                .map(|x| x.to_ascii_uppercase())
+                .collect::<String>();
+
+            if let Some(freq) = tf.get_mut(&term) {
+                *freq += 1;
+            } else {
+                tf.insert(term, 1);
+            }
+        }
+
+        let mut stats: Vec<_> = tf.iter().collect();
+        stats.sort_by_key(|(_, f)| *f);
+        stats.reverse();
+
+        println!("{file:?}");
+        for (t, r) in stats.iter().take(top_n) {
+            println!("{t} => {r}");
+        }
     }
-    //let all_document = HashMap::<PathBuf, HashMap<String, usize>>::new();
-    //let file_path = "./docs.gl/gl4";
-    //let dir = fs::read_dir(file_path)?;
-
-    //for file in dir {
-    //    let path = file?.path();
-    //    let content = read_entire_xml_file(&path);
-    //    println!(
-    //        "length of content in {path:?}: {length}",
-    //        length = content?.len()
-    //    );
-    //}
     Ok(())
 }

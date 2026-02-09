@@ -1,11 +1,11 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    hash::Hash,
     io,
     path::{Path, PathBuf},
-    process::exit,
+    process::{ExitCode, exit},
 };
+use tiny_http::{Response, Server};
 use xml::reader::{EventReader, XmlEvent};
 
 #[derive(Debug)]
@@ -66,44 +66,30 @@ impl<'a> Iterator for Lexer<'a> {
     }
 }
 
-fn index_document(doc_content: &str) -> HashMap<String, usize> {
-    todo!("Not Implemented")
+fn check_index(index_path: &str) -> io::Result<()> {
+    let index_file = File::open(index_path)?;
+    let tf_index: TermFreqIndex = serde_json::from_reader(index_file)?;
+    println!(
+        "Index.json contains: {length} files",
+        length = tf_index.len()
+    );
+
+    Ok(())
 }
 
-fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
-    let file = File::open(file_path).unwrap_or_else(|err| {
-        eprintln!("ERROR: cound not read file : {err}");
-        exit(1);
-    });
-
-    let er = EventReader::new(file);
-    let mut content = String::new();
-
-    for event in er {
-        let event = event.unwrap_or_else(|err| {
-            eprintln!("ERROR: cannot read next xml file: {err}");
-            exit(1)
-        });
-
-        if let XmlEvent::Characters(text) = event {
-            content.push_str(&text);
-            content.push_str(" ");
-        }
-    }
-
-    Ok(content)
+fn save_tf_index(tf_index: &TermFreqIndex, index_path: &str) -> io::Result<()> {
+    let index_file = File::create(index_path)?;
+    serde_json::to_writer(index_file, tf_index)?;
+    Ok(())
 }
 
-fn main() -> io::Result<()> {
-    let file_path = "./docs.gl/gl4";
+fn tf_index_of_folder(file_path: &str, tf_index: &mut TermFreqIndex) -> io::Result<()> {
     let dir = fs::read_dir(file_path)?;
-    let top_n = 20;
-
     for file in dir {
         let file = file?.path();
         let document = read_entire_xml_file(&file)?.chars().collect::<Vec<_>>();
 
-        let mut tf = HashMap::<String, usize>::new();
+        let mut tf = TF::new();
 
         for lexer in Lexer::new(&document) {
             let term = lexer
@@ -118,14 +104,99 @@ fn main() -> io::Result<()> {
             }
         }
 
-        let mut stats: Vec<_> = tf.iter().collect();
-        stats.sort_by_key(|(_, f)| *f);
-        stats.reverse();
-
-        println!("{file:?}");
-        for (t, r) in stats.iter().take(top_n) {
-            println!("{t} => {r}");
-        }
+        tf_index.insert(file, tf);
     }
     Ok(())
+}
+
+fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
+    let file = File::open(file_path)?;
+
+    let er = EventReader::new(file);
+    let mut content = String::new();
+
+    for event in er {
+        //let event = event.unwrap_or_else(|err| {
+        //    eprintln!("ERROR: cannot read next xml file: {err}");
+        //    exit(1)
+        //});
+
+        if let XmlEvent::Characters(text) = event.expect("ERROR: cannot read next xml file: {err}")
+        {
+            content.push_str(&text);
+            content.push_str(" ");
+        }
+    }
+
+    Ok(content)
+}
+type TF = HashMap<String, usize>;
+type TermFreqIndex = HashMap<PathBuf, TF>;
+
+fn usage(program: &str) {
+    eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
+    eprintln!("Subcommands:");
+    eprintln!("    serve <folder> [address]       start local HTTP server with Web Interface");
+}
+
+fn entry() -> Result<(), ()> {
+    let mut args = std::env::args();
+    let program = args.next().expect("Path to prgram is provided");
+
+    let subcommand = args.next().ok_or_else(|| {
+        usage(&program);
+        eprintln!("ERROR: no address provided");
+        ()
+    })?;
+
+    match subcommand.as_str() {
+        "index" => {
+            let dir_path = args.next().ok_or_else(|| {
+                usage(&program);
+                eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
+            })?;
+
+            let mut tf_index = TermFreqIndex::new();
+
+            tf_index_of_folder(dir_path.as_str(), &mut tf_index).map_err(|e| {
+                eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
+                ()
+            })?;
+            save_tf_index(&tf_index, "index.json").map_err(|e| {
+                eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
+                ()
+            })?;
+        }
+
+        "search" => {
+            let index_path = args.next().ok_or_else(|| {
+                usage(&program);
+                eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
+            })?;
+
+            check_index(&index_path).map_err(|e| {
+                eprintln!("ERROR: {e}");
+                ()
+            })?;
+        }
+
+        "serve" => {
+            let address = args.next().unwrap_or("127.0.0.1:7878".to_string());
+            let server = Server::http(address).unwrap();
+        }
+
+        _ => {
+            usage(&program);
+        }
+    }
+
+    todo!();
+}
+
+fn main() -> ExitCode {
+    //main2()?;
+    match entry() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(()) => ExitCode::FAILURE,
+    }
 }

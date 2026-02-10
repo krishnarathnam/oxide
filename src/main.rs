@@ -4,9 +4,8 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::ExitCode,
-    str::FromStr,
 };
-use tiny_http::{Header, HeaderField, Method, Request, Response, Server};
+use tiny_http::{Header, Method, Request, Response, Server};
 use xml::reader::{EventReader, XmlEvent};
 
 #[derive(Debug)]
@@ -117,11 +116,6 @@ fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
     let mut content = String::new();
 
     for event in er {
-        //let event = event.unwrap_or_else(|err| {
-        //    eprintln!("ERROR: cannot read next xml file: {err}");
-        //    exit(1)
-        //});
-
         if let XmlEvent::Characters(text) = event.expect("ERROR: cannot read next xml file: {err}")
         {
             content.push_str(&text);
@@ -134,10 +128,24 @@ fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
 type TF = HashMap<String, usize>;
 type TermFreqIndex = HashMap<PathBuf, TF>;
 
+fn serve_static_file(file_path: &str, request: Request, content_type: &str) -> io::Result<()> {
+    let file_content = File::open(file_path)?;
+    let content_type_text_html = Header::from_bytes("Content-Type", content_type).unwrap();
+    let response = Response::from_file(file_content).with_header(content_type_text_html.clone());
+    request.respond(response)?;
+    Ok(())
+}
+
 fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
     eprintln!("    serve <folder> [address]       start local HTTP server with Web Interface");
+}
+
+fn serve_404_err(request: Request) -> io::Result<()> {
+    let response = Response::from_string("404 - Page dosnt exist").with_status_code(404);
+    request.respond(response)?;
+    Ok(())
 }
 
 fn serve_request(request: Request) -> io::Result<()> {
@@ -149,26 +157,13 @@ fn serve_request(request: Request) -> io::Result<()> {
 
     match (request.method(), request.url()) {
         (Method::Get, "/") | (Method::Get, "/index.html") => {
-            let file_content = File::open("./index.html")?;
-            let content_type_text_html =
-                Header::from_bytes("Content-Type", "text/html; charset=uts-8").unwrap();
-            let response =
-                Response::from_file(file_content).with_header(content_type_text_html.clone());
-            request.respond(response)?;
+            serve_static_file("./index.html", request, "text/html; charset=uts-8")?
         }
 
         (Method::Get, "/index.js") => {
-            let file_content = File::open("./index.js")?;
-            let content_type_text_html =
-                Header::from_bytes("Content-Type", "text/javascript; charset=uts-8").unwrap();
-            let response =
-                Response::from_file(file_content).with_header(content_type_text_html.clone());
-            request.respond(response)?;
+            serve_static_file("./index.js", request, "text/javascript; charset=uts-8")?
         }
-        _ => {
-            let response = Response::from_string("404 - Page dosnt exist").with_status_code(404);
-            request.respond(response)?;
-        }
+        _ => serve_404_err(request)?,
     }
 
     Ok(())

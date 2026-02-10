@@ -4,8 +4,9 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::ExitCode,
+    str::FromStr,
 };
-use tiny_http::{Header, Response, Server};
+use tiny_http::{Header, HeaderField, Method, Request, Response, Server};
 use xml::reader::{EventReader, XmlEvent};
 
 #[derive(Debug)]
@@ -139,6 +140,40 @@ fn usage(program: &str) {
     eprintln!("    serve <folder> [address]       start local HTTP server with Web Interface");
 }
 
+fn serve_request(request: Request) -> io::Result<()> {
+    println!(
+        "INFO: received request! method {:?} url: {:?}",
+        request.method(),
+        request.url()
+    );
+
+    match (request.method(), request.url()) {
+        (Method::Get, "/") | (Method::Get, "/index.html") => {
+            let file_content = File::open("./index.html")?;
+            let content_type_text_html =
+                Header::from_bytes("Content-Type", "text/html; charset=uts-8").unwrap();
+            let response =
+                Response::from_file(file_content).with_header(content_type_text_html.clone());
+            request.respond(response)?;
+        }
+
+        (Method::Get, "/index.js") => {
+            let file_content = File::open("./index.js")?;
+            let content_type_text_html =
+                Header::from_bytes("Content-Type", "text/javascript; charset=uts-8").unwrap();
+            let response =
+                Response::from_file(file_content).with_header(content_type_text_html.clone());
+            request.respond(response)?;
+        }
+        _ => {
+            let response = Response::from_string("404 - Page dosnt exist").with_status_code(404);
+            request.respond(response)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn entry() -> Result<(), ()> {
     let mut args = std::env::args();
     let program = args.next().expect("Path to prgram is provided");
@@ -187,26 +222,9 @@ fn entry() -> Result<(), ()> {
                 ()
             })?;
 
-            let file_content = fs::read_to_string("./index.html").map_err(|e| {
-                eprintln!("ERROR: Could not start server at {address}: {e}");
-                ()
-            })?;
-
-            let content_type_text_html =
-                Header::from_bytes("Content-Type", "text/html; charset=uts-8").unwrap();
             println!("Running server at: http://{address}");
-
             for request in server.incoming_requests() {
-                println!(
-                    "INFO: received request! method {:?} url: {:?}",
-                    request.method(),
-                    request.url()
-                );
-                let response = Response::from_string(&file_content)
-                    .with_header(content_type_text_html.clone());
-                request.respond(response).map_err(|e| {
-                    eprintln!("ERROR: Could not send response at {address}: {e}");
-                })?;
+                let _ = serve_request(request);
             }
         }
 

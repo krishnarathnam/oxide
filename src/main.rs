@@ -3,9 +3,9 @@ use std::{
     fs::{self, File},
     io,
     path::{Path, PathBuf},
-    process::{ExitCode, exit},
+    process::ExitCode,
 };
-use tiny_http::{Response, Server};
+use tiny_http::{Header, Response, Server};
 use xml::reader::{EventReader, XmlEvent};
 
 #[derive(Debug)]
@@ -181,8 +181,33 @@ fn entry() -> Result<(), ()> {
         }
 
         "serve" => {
-            let address = args.next().unwrap_or("127.0.0.1:7878".to_string());
-            let server = Server::http(address).unwrap();
+            let address = args.next().unwrap_or("127.0.0.1:6969".to_string());
+            let server = Server::http(&address).map_err(|e| {
+                eprintln!("ERROR: Could not start server at {address}: {e}");
+                ()
+            })?;
+
+            let file_content = fs::read_to_string("./index.html").map_err(|e| {
+                eprintln!("ERROR: Could not start server at {address}: {e}");
+                ()
+            })?;
+
+            let content_type_text_html =
+                Header::from_bytes("Content-Type", "text/html; charset=uts-8").unwrap();
+            println!("Running server at: http://{address}");
+
+            for request in server.incoming_requests() {
+                println!(
+                    "INFO: received request! method {:?} url: {:?}",
+                    request.method(),
+                    request.url()
+                );
+                let response = Response::from_string(&file_content)
+                    .with_header(content_type_text_html.clone());
+                request.respond(response).map_err(|e| {
+                    eprintln!("ERROR: Could not send response at {address}: {e}");
+                })?;
+            }
         }
 
         _ => {

@@ -1,0 +1,20 @@
+<html>
+  <head>
+    <title>Rust Search Engine</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+      input[type="text"] { width: 70%; padding: 12px; font-size: 16px; border: 2px solid #ddd; border-radius: 4px; }
+      button { width: 25%; padding: 12px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px; }
+      button:hover { background: #0056b3; }
+      .search-container { display: flex; gap: 10px; }
+    </style>
+  </head>
+  <body>
+    <h1>Rust Search Engine</h1>
+    
+    <form action="/search" method="GET" class="search-container">
+      <input type="text" name="q" placeholder="Enter your search query..." required>
+      <button type="submit">Search</button>
+    </form>
+  </body>
+</html>

@@ -30,36 +30,43 @@ impl<'a> Lexer<'a> {
         token
     }
 
-    fn next_token(&mut self) -> Option<&'a [char]> {
+    fn chop_while<P>(&mut self, _predicate: P) -> &'a [char]
+    where
+        P: FnMut(&char) -> bool,
+    {
+        let mut n = 0;
+        while n < self.content.len() && self.content[n].is_alphanumeric() {
+            n += 1;
+        }
+
+        self.chop(n)
+    }
+
+    fn next_token(&mut self) -> Option<String> {
         self.trim_left_whitespace();
         if self.content.len() == 0 {
             return None;
         }
 
         if self.content[0].is_numeric() {
-            let mut n = 0;
-            while n < self.content.len() && self.content[n].is_alphanumeric() {
-                n += 1;
-            }
-
-            return Some(self.chop(n));
+            return Some(self.chop_while(|x| x.is_numeric()).iter().collect());
         }
 
         if self.content[0].is_alphabetic() {
-            let mut n = 0;
-            while n < self.content.len() && self.content[n].is_alphanumeric() {
-                n += 1;
-            }
-
-            return Some(self.chop(n));
+            return Some(
+                self.chop_while(|x| x.is_alphanumeric())
+                    .iter()
+                    .map(|x| x.to_ascii_uppercase())
+                    .collect(),
+            );
         }
 
-        return Some(self.chop(1));
+        return Some(self.chop(1).iter().collect());
     }
 }
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = &'a [char];
+    type Item = String;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
@@ -91,12 +98,7 @@ fn tf_index_of_folder(file_path: &str, tf_index: &mut TermFreqIndex) -> io::Resu
 
         let mut tf = TF::new();
 
-        for lexer in Lexer::new(&document) {
-            let term = lexer
-                .iter()
-                .map(|x| x.to_ascii_uppercase())
-                .collect::<String>();
-
+        for term in Lexer::new(&document) {
             if let Some(freq) = tf.get_mut(&term) {
                 *freq += 1;
             } else {
@@ -148,7 +150,13 @@ fn serve_404_err(request: Request) -> io::Result<()> {
     Ok(())
 }
 
-fn serve_request(request: Request) -> io::Result<()> {
+fn tf_search(term: &str, d: &TF) -> f32 {
+    let a = d.get(term).cloned().unwrap_or(0) as f32;
+    let b = d.iter().map(|(_, f)| *f).sum::<usize>() as f32;
+    a / b
+}
+
+fn serve_request(tf_index: &TermFreqIndex, mut request: Request) -> io::Result<()> {
     println!(
         "INFO: received request! method {:?} url: {:?}",
         request.method(),
@@ -156,6 +164,23 @@ fn serve_request(request: Request) -> io::Result<()> {
     );
 
     match (request.method(), request.url()) {
+        (Method::Post, "/api/search") => {
+            let mut buf1: Vec<u8> = Vec::new();
+            request.as_reader().read_to_end(&mut buf1)?;
+            let body = str::from_utf8(&buf1).unwrap().chars().collect::<Vec<_>>();
+
+            for (path, tf_table) in tf_index {
+                let mut total_tf: f32 = 0.0;
+                for token in Lexer::new(&body) {
+                    total_tf += tf_search(&token.to_string(), &tf_table);
+                }
+
+                println!(
+                    "{path} total score for this document: {total_tf}",
+                    path = path.display()
+                );
+            }
+        }
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             serve_static_file("./index.html", request, "text/html; charset=uts-8")?
         }
@@ -163,6 +188,7 @@ fn serve_request(request: Request) -> io::Result<()> {
         (Method::Get, "/index.js") => {
             serve_static_file("./index.js", request, "text/javascript; charset=uts-8")?
         }
+
         _ => serve_404_err(request)?,
     }
 
@@ -211,6 +237,21 @@ fn entry() -> Result<(), ()> {
         }
 
         "serve" => {
+            let index_path = args.next().ok_or_else(|| {
+                usage(&program);
+                eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
+            })?;
+
+            let index_file = File::open(index_path).map_err(|e| {
+                eprintln!("ERROR: cannot open index file: {e}");
+                ()
+            })?;
+
+            let tf_index: TermFreqIndex = serde_json::from_reader(index_file).map_err(|e| {
+                eprintln!("ERROR: cannot parse index file: {e}");
+                ()
+            })?;
+
             let address = args.next().unwrap_or("127.0.0.1:6969".to_string());
             let server = Server::http(&address).map_err(|e| {
                 eprintln!("ERROR: Could not start server at {address}: {e}");
@@ -219,7 +260,7 @@ fn entry() -> Result<(), ()> {
 
             println!("Running server at: http://{address}");
             for request in server.incoming_requests() {
-                let _ = serve_request(request);
+                let _ = serve_request(&tf_index, request);
             }
         }
 

@@ -90,38 +90,63 @@ fn save_tf_index(tf_index: &TermFreqIndex, index_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn tf_index_of_folder(file_path: &str, tf_index: &mut TermFreqIndex) -> io::Result<()> {
-    let dir = fs::read_dir(file_path)?;
-    for file in dir {
-        let file = file?.path();
-        let document = read_entire_xml_file(&file)?.chars().collect::<Vec<_>>();
+//for term in Lexer::new(&document) {
+//    if let Some(freq) = tf.get_mut(&term) {
+//        *freq += 1;
+//    } else {
+//        tf.insert(term, 1);
+//    }
+//}
+fn tf_index_to_folder(dir_path: &str, tf_index: &mut TermFreqIndex) -> io::Result<()> {
+    let dir = fs::read_dir(dir_path)?;
+    for entry in dir {
+        let path = entry?.path();
 
-        let mut tf = TF::new();
+        if path.is_dir() {
+            tf_index_to_folder(path.to_str().unwrap(), tf_index)?;
+        } else {
+            let document = match read_entire_xml_file(&path) {
+                Ok(text) => {
+                    println!("converted the file: {}", path.display());
+                    text.chars().collect::<Vec<_>>()
+                }
+                Err(_) => {
+                    println!("Skipping non-XML file {}", path.display());
+                    continue;
+                }
+            };
 
-        for term in Lexer::new(&document) {
-            if let Some(freq) = tf.get_mut(&term) {
-                *freq += 1;
-            } else {
-                tf.insert(term, 1);
+            let mut tf = TF::new();
+
+            for term in Lexer::new(&document) {
+                if let Some(freq) = tf.get_mut(&term) {
+                    *freq += 1;
+                } else {
+                    tf.insert(term, 1);
+                }
             }
+            tf_index.insert(path, tf);
         }
-
-        tf_index.insert(file, tf);
     }
     Ok(())
 }
 
 fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
     let file = File::open(file_path)?;
-
     let er = EventReader::new(file);
     let mut content = String::new();
 
+    if content.starts_with('\u{feff}') {
+        content = content.replacen('\u{feff}', "", 1);
+    }
     for event in er {
-        if let XmlEvent::Characters(text) = event.expect("ERROR: cannot read next xml file: {err}")
-        {
+        let event = event.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        if let XmlEvent::Characters(text) = event {
             content.push_str(&text);
             content.push_str(" ");
+        } else {
+            continue;
         }
     }
 
@@ -150,10 +175,21 @@ fn serve_404_err(request: Request) -> io::Result<()> {
     Ok(())
 }
 
-fn tf_search(term: &str, d: &TF) -> f32 {
+fn calculate_tf(term: &str, d: &TF) -> f32 {
     let a = d.get(term).cloned().unwrap_or(0) as f32;
     let b = d.iter().map(|(_, f)| *f).sum::<usize>() as f32;
     a / b
+}
+
+fn calculate_idf(term: &str, d: &TermFreqIndex) -> f32 {
+    let n = d.len() as f32; // Total documents
+    let m = d
+        .values()
+        .filter(|tf| tf.contains_key(term)) // Check if term exists in this doc's TF
+        .count()
+        .max(1) as f32; // Documents containing term
+
+    (n / m).log10()
 }
 
 fn serve_request(tf_index: &TermFreqIndex, mut request: Request) -> io::Result<()> {
@@ -169,16 +205,21 @@ fn serve_request(tf_index: &TermFreqIndex, mut request: Request) -> io::Result<(
             request.as_reader().read_to_end(&mut buf1)?;
             let body = str::from_utf8(&buf1).unwrap().chars().collect::<Vec<_>>();
 
+            let mut score: Vec<(&Path, f32)> = Vec::new();
             for (path, tf_table) in tf_index {
-                let mut total_tf: f32 = 0.0;
+                let mut doc_score: f32 = 0.0;
                 for token in Lexer::new(&body) {
-                    total_tf += tf_search(&token.to_string(), &tf_table);
+                    let tf = calculate_tf(&token.to_string(), &tf_table);
+                    let idf = calculate_idf(&token.to_string(), &tf_index);
+                    doc_score += tf * idf;
                 }
 
-                println!(
-                    "{path} total score for this document: {total_tf}",
-                    path = path.display()
-                );
+                score.push((&path, doc_score));
+            }
+
+            score.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            for (path, rank) in score.iter().take(10) {
+                println!("{path} => {rank}", path = path.display());
             }
         }
         (Method::Get, "/") | (Method::Get, "/index.html") => {
@@ -214,7 +255,7 @@ fn entry() -> Result<(), ()> {
 
             let mut tf_index = TermFreqIndex::new();
 
-            tf_index_of_folder(dir_path.as_str(), &mut tf_index).map_err(|e| {
+            tf_index_to_folder(dir_path.as_str(), &mut tf_index).map_err(|e| {
                 eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
                 ()
             })?;

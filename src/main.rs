@@ -166,6 +166,8 @@ fn serve_static_file(file_path: &str, request: Request, content_type: &str) -> i
 fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
+    eprintln!("    index <folder>                 Turn the folder and file into index.json");
+    eprintln!("    search <folder>                search how many files are in index.json");
     eprintln!("    serve <folder> [address]       start local HTTP server with Web Interface");
 }
 

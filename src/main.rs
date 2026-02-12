@@ -17,12 +17,6 @@ struct Lexer<'a> {
     content: &'a [char],
 }
 
-//struct IndexData {
-//    tf_index: TermFreqIndex,
-//    idf_map: HashMap<String, usize>,
-//    doc_count: usize,
-//}
-
 impl<'a> Lexer<'a> {
     fn new(content: &'a [char]) -> Self {
         Self { content }

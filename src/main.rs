@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io,
+    io::{self, BufReader, BufWriter},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -86,7 +86,7 @@ fn check_index(index_path: &str) -> io::Result<()> {
 
 fn save_tf_index(tf_index: &TermFreqIndex, index_path: &str) -> io::Result<()> {
     let index_file = File::create(index_path)?;
-    serde_json::to_writer(index_file, tf_index)?;
+    serde_json::to_writer(BufWriter::new(index_file), tf_index)?;
     Ok(())
 }
 
@@ -133,7 +133,7 @@ fn tf_index_to_folder(dir_path: &str, tf_index: &mut TermFreqIndex) -> io::Resul
 
 fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
     let file = File::open(file_path)?;
-    let er = EventReader::new(file);
+    let er = EventReader::new(BufReader::new(file));
     let mut content = String::new();
 
     if content.starts_with('\u{feff}') {
@@ -312,7 +312,7 @@ fn entry() -> Result<(), ()> {
         }
     }
 
-    todo!();
+    Ok(())
 }
 
 fn main() -> ExitCode {

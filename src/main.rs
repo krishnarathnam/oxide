@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -9,8 +10,15 @@ use std::{
 use tiny_http::{Header, Method, Request, Response, Server};
 use xml::reader::{EventReader, XmlEvent};
 
-type TF = HashMap<String, usize>;
-type TermFreqIndex = HashMap<PathBuf, TF>;
+type TermFreq = HashMap<String, usize>;
+type DocFreq = HashMap<String, usize>;
+type TermFreqIndex = HashMap<PathBuf, TermFreq>;
+
+#[derive(Deserialize, Serialize, Default, Debug)]
+struct IndexData {
+    tfi: TermFreqIndex,
+    df: DocFreq,
+}
 
 #[derive(Debug)]
 struct Lexer<'a> {
@@ -88,26 +96,39 @@ fn check_index(index_path: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn save_tf_index(tf_index: &TermFreqIndex, index_path: &str) -> io::Result<()> {
+fn build_df_index(index_data: &mut IndexData) {
+    for tf_table in index_data.tfi.values() {
+        for term in tf_table.keys() {
+            *index_data.df.entry(term.clone()).or_insert(0) += 1;
+        }
+    }
+}
+
+fn build_idf_index(index_data: &IndexData) -> HashMap<String, f32> {
+    let mut idf_map: HashMap<String, f32> = HashMap::new();
+
+    for (term, count) in &index_data.df {
+        let idf = (index_data.tfi.len() as f32 / *count as f32).log10();
+        idf_map.insert(term.to_string(), idf);
+    }
+
+    idf_map
+}
+
+fn save_index_to_json(index_data: &mut IndexData, index_path: &str) -> io::Result<()> {
+    build_df_index(index_data);
     let index_file = File::create(index_path)?;
-    serde_json::to_writer(BufWriter::new(index_file), tf_index)?;
+    serde_json::to_writer(BufWriter::new(index_file), index_data)?;
     Ok(())
 }
 
-//for term in Lexer::new(&document) {
-//    if let Some(freq) = tf.get_mut(&term) {
-//        *freq += 1;
-//    } else {
-//        tf.insert(term, 1);
-//    }
-//}
-fn tf_index_to_folder(dir_path: &str, tf_index: &mut TermFreqIndex) -> io::Result<()> {
+fn save_folder_to_model(dir_path: &str, index_data: &mut IndexData) -> io::Result<()> {
     let dir = fs::read_dir(dir_path)?;
     for entry in dir {
         let path = entry?.path();
 
         if path.is_dir() {
-            tf_index_to_folder(path.to_str().unwrap(), tf_index)?;
+            save_folder_to_model(path.to_str().unwrap(), index_data)?;
         } else {
             let document = match read_entire_xml_file(&path) {
                 Ok(text) => {
@@ -120,7 +141,7 @@ fn tf_index_to_folder(dir_path: &str, tf_index: &mut TermFreqIndex) -> io::Resul
                 }
             };
 
-            let mut tf = TF::new();
+            let mut tf = TermFreq::new();
 
             for term in Lexer::new(&document) {
                 if let Some(freq) = tf.get_mut(&term) {
@@ -129,7 +150,7 @@ fn tf_index_to_folder(dir_path: &str, tf_index: &mut TermFreqIndex) -> io::Resul
                     tf.insert(term, 1);
                 }
             }
-            tf_index.insert(path, tf);
+            index_data.tfi.insert(path, tf);
         }
     }
     Ok(())
@@ -179,37 +200,14 @@ fn serve_404_err(request: Request) -> io::Result<()> {
     Ok(())
 }
 
-fn calculate_tf(term: &str, d: &TF) -> f32 {
+fn calculate_tf(term: &str, d: &TermFreq) -> f32 {
     let a = d.get(term).cloned().unwrap_or(0) as f32;
     let b = d.iter().map(|(_, f)| *f).sum::<usize>() as f32;
     a / b
 }
 
-fn build_df_index(tf_index: &TermFreqIndex) -> HashMap<String, usize> {
-    let mut df: HashMap<String, usize> = HashMap::new();
-
-    for tf_table in tf_index.values() {
-        for term in tf_table.keys() {
-            *df.entry(term.to_string()).or_insert(0) += 1;
-        }
-    }
-
-    df
-}
-
-fn build_idf_index(df_index: &HashMap<String, usize>, total_doc: usize) -> HashMap<String, f32> {
-    let mut idf_map: HashMap<String, f32> = HashMap::new();
-
-    for (term, count) in df_index {
-        let idf = (total_doc as f32 / *count as f32).log10();
-        idf_map.insert(term.to_string(), idf);
-    }
-
-    idf_map
-}
-
 fn serve_request(
-    tf_index: &TermFreqIndex,
+    index_data: &IndexData,
     mut request: Request,
     idf_map: &HashMap<String, f32>,
 ) -> io::Result<()> {
@@ -226,21 +224,30 @@ fn serve_request(
             let body = str::from_utf8(&buf1).unwrap().chars().collect::<Vec<_>>();
 
             let mut score: Vec<(&Path, f32)> = Vec::new();
-            for (path, tf_table) in tf_index {
+            for (path, tf_table) in &index_data.tfi {
                 let mut doc_score: f32 = 0.0;
                 for token in Lexer::new(&body) {
-                    let tf = calculate_tf(&token.to_string(), &tf_table);
+                    let tf = calculate_tf(&token, &tf_table);
                     let idf = *idf_map.get(&token).unwrap_or(&0.0);
                     doc_score += tf * idf;
                 }
 
                 score.push((&path, doc_score));
             }
-
             score.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            for (path, rank) in score.iter().take(10) {
-                println!("{path} => {rank}", path = path.display());
-            }
+
+            let top_results: Vec<_> = score
+                .iter()
+                .take(10)
+                .map(|(path, rank)| format!("{} => {}", path.display(), rank))
+                .collect();
+
+            let body = top_results.join("\n");
+
+            let response = Response::from_string(body)
+                .with_header(Header::from_bytes("Content-Type", "text/plain").unwrap());
+
+            request.respond(response)?;
         }
         (Method::Get, "/") | (Method::Get, "/index.html") => {
             serve_static_file("./index.html", request, "text/html; charset=uts-8")?
@@ -273,13 +280,13 @@ fn entry() -> Result<(), ()> {
                 eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
             })?;
 
-            let mut tf_index = TermFreqIndex::new();
+            let mut index_data: IndexData = Default::default();
 
-            tf_index_to_folder(dir_path.as_str(), &mut tf_index).map_err(|e| {
+            save_folder_to_model(dir_path.as_str(), &mut index_data).map_err(|e| {
                 eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
                 ()
             })?;
-            save_tf_index(&tf_index, "index.json").map_err(|e| {
+            save_index_to_json(&mut index_data, "index.json").map_err(|e| {
                 eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
                 ()
             })?;
@@ -308,7 +315,7 @@ fn entry() -> Result<(), ()> {
                 ()
             })?;
 
-            let tf_index: TermFreqIndex = serde_json::from_reader(index_file).map_err(|e| {
+            let index_data: IndexData = serde_json::from_reader(index_file).map_err(|e| {
                 eprintln!("ERROR: cannot parse index file: {e}");
                 ()
             })?;
@@ -318,11 +325,10 @@ fn entry() -> Result<(), ()> {
                 eprintln!("ERROR: Could not start server at {address}: {e}");
                 ()
             })?;
-            let df = build_df_index(&tf_index);
-            let idf_map = build_idf_index(&df, tf_index.len());
+            let idf_map = build_idf_index(&index_data);
             println!("Running server at: http://{address}");
             for request in server.incoming_requests() {
-                let _ = serve_request(&tf_index, request, &idf_map);
+                let _ = serve_request(&index_data, request, &idf_map);
             }
         }
 

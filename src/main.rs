@@ -214,7 +214,7 @@ fn serve_request(
     idf_map: &HashMap<String, f32>,
 ) -> io::Result<()> {
     println!(
-        "INFO: received request! method {:?} url: {:?}",
+        "info: received request! method {:?} url: {:?}",
         request.method(),
         request.url()
     );

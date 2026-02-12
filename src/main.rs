@@ -4,14 +4,24 @@ use std::{
     io::{self, BufReader, BufWriter},
     path::{Path, PathBuf},
     process::ExitCode,
+    usize,
 };
 use tiny_http::{Header, Method, Request, Response, Server};
 use xml::reader::{EventReader, XmlEvent};
+
+type TF = HashMap<String, usize>;
+type TermFreqIndex = HashMap<PathBuf, TF>;
 
 #[derive(Debug)]
 struct Lexer<'a> {
     content: &'a [char],
 }
+
+//struct IndexData {
+//    tf_index: TermFreqIndex,
+//    idf_map: HashMap<String, usize>,
+//    doc_count: usize,
+//}
 
 impl<'a> Lexer<'a> {
     fn new(content: &'a [char]) -> Self {
@@ -152,8 +162,6 @@ fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
 
     Ok(content)
 }
-type TF = HashMap<String, usize>;
-type TermFreqIndex = HashMap<PathBuf, TF>;
 
 fn serve_static_file(file_path: &str, request: Request, content_type: &str) -> io::Result<()> {
     let file_content = File::open(file_path)?;
@@ -183,18 +191,34 @@ fn calculate_tf(term: &str, d: &TF) -> f32 {
     a / b
 }
 
-fn calculate_idf(term: &str, d: &TermFreqIndex) -> f32 {
-    let n = d.len() as f32; // Total documents
-    let m = d
-        .values()
-        .filter(|tf| tf.contains_key(term)) // Check if term exists in this doc's TF
-        .count()
-        .max(1) as f32; // Documents containing term
+fn build_df_index(tf_index: &TermFreqIndex) -> HashMap<String, usize> {
+    let mut df: HashMap<String, usize> = HashMap::new();
 
-    (n / m).log10()
+    for tf_table in tf_index.values() {
+        for term in tf_table.keys() {
+            *df.entry(term.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    df
 }
 
-fn serve_request(tf_index: &TermFreqIndex, mut request: Request) -> io::Result<()> {
+fn build_idf_index(df_index: &HashMap<String, usize>, total_doc: usize) -> HashMap<String, f32> {
+    let mut idf_map: HashMap<String, f32> = HashMap::new();
+
+    for (term, count) in df_index {
+        let idf = (total_doc as f32 / *count as f32).log10();
+        idf_map.insert(term.to_string(), idf);
+    }
+
+    idf_map
+}
+
+fn serve_request(
+    tf_index: &TermFreqIndex,
+    mut request: Request,
+    idf_map: &HashMap<String, f32>,
+) -> io::Result<()> {
     println!(
         "INFO: received request! method {:?} url: {:?}",
         request.method(),
@@ -212,7 +236,7 @@ fn serve_request(tf_index: &TermFreqIndex, mut request: Request) -> io::Result<(
                 let mut doc_score: f32 = 0.0;
                 for token in Lexer::new(&body) {
                     let tf = calculate_tf(&token.to_string(), &tf_table);
-                    let idf = calculate_idf(&token.to_string(), &tf_index);
+                    let idf = *idf_map.get(&token).unwrap_or(&0.0);
                     doc_score += tf * idf;
                 }
 
@@ -300,10 +324,11 @@ fn entry() -> Result<(), ()> {
                 eprintln!("ERROR: Could not start server at {address}: {e}");
                 ()
             })?;
-
+            let df = build_df_index(&tf_index);
+            let idf_map = build_idf_index(&df, tf_index.len());
             println!("Running server at: http://{address}");
             for request in server.incoming_requests() {
-                let _ = serve_request(&tf_index, request);
+                let _ = serve_request(&tf_index, request, &idf_map);
             }
         }
 

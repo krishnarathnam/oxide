@@ -21,12 +21,6 @@ fn serve_404_err(request: Request) -> io::Result<()> {
     Ok(())
 }
 
-fn calculate_tf(term: &str, d: &model::TermFreq) -> f32 {
-    let a = d.get(term).cloned().unwrap_or(0) as f32;
-    let b = d.iter().map(|(_, f)| *f).sum::<usize>() as f32;
-    a / b
-}
-
 pub fn serve_request(
     inverted_index_data: &model::InvertedIndexData,
     mut request: Request,
@@ -54,7 +48,7 @@ pub fn serve_request(
                         let len = *inverted_index_data.doc_len.get(doc).unwrap_or(&1) as f32;
                         let tf = *freq as f32 / len;
 
-                        *scores.entry(doc.as_path()).or_insert(0.0) += tf * idf;
+                        *scores.entry(doc.as_path()).or_insert(0.0) += (tf * idf).sqrt();
                     }
                 }
             }

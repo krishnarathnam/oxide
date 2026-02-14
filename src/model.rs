@@ -7,19 +7,9 @@ use std::{collections::HashMap, path::PathBuf};
 use std::{fs, io};
 use xml::reader::{EventReader, XmlEvent};
 
-pub type TermFreq = HashMap<String, usize>;
-pub type DocFreq = HashMap<String, usize>;
-pub type TermFreqIndex = HashMap<PathBuf, TermFreq>;
-
 pub type Posting = HashMap<PathBuf, usize>;
 pub type InvertedIndex = HashMap<String, Posting>;
 pub type DocLen = HashMap<PathBuf, usize>;
-
-#[derive(Deserialize, Serialize, Default, Debug)]
-pub struct IndexData {
-    pub tfi: TermFreqIndex,
-    pub df: DocFreq,
-}
 
 #[derive(Deserialize, Serialize, Default, Debug)]
 pub struct InvertedIndexData {
@@ -79,7 +69,8 @@ impl<'a> Lexer<'a> {
             );
         }
 
-        return Some(self.chop(1).iter().collect());
+        self.chop(1);
+        return self.next_token();
     }
 }
 
@@ -89,35 +80,6 @@ impl<'a> Iterator for Lexer<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
     }
-}
-
-pub fn check_index(index_path: &str) -> io::Result<()> {
-    let index_file = File::open(index_path)?;
-    let tf_index: TermFreqIndex = serde_json::from_reader(index_file)?;
-    println!(
-        "Index.json contains: {length} files",
-        length = tf_index.len()
-    );
-    Ok(())
-}
-
-fn build_df_index(index_data: &mut IndexData) {
-    for tf_table in index_data.tfi.values() {
-        for term in tf_table.keys() {
-            *index_data.df.entry(term.clone()).or_insert(0) += 1;
-        }
-    }
-}
-
-pub fn build_idf_index(index_data: &IndexData) -> HashMap<String, f32> {
-    let mut idf_map: HashMap<String, f32> = HashMap::new();
-
-    for (term, count) in &index_data.df {
-        let idf = (index_data.tfi.len() as f32 / *count as f32).log10();
-        idf_map.insert(term.to_string(), idf);
-    }
-
-    idf_map
 }
 
 pub fn build_idf_inverted_index(inverted_index_data: &InvertedIndexData) -> HashMap<String, f32> {
@@ -134,13 +96,6 @@ pub fn build_idf_inverted_index(inverted_index_data: &InvertedIndexData) -> Hash
     idf_map
 }
 
-pub fn save_index_to_json(index_data: &mut IndexData, index_path: &str) -> io::Result<()> {
-    build_df_index(index_data);
-    let index_file = File::create(index_path)?;
-    serde_json::to_writer(BufWriter::new(index_file), index_data)?;
-    Ok(())
-}
-
 pub fn save_inverted_index_to_json(
     inverted_index_data: &mut InvertedIndexData,
     index_path: &str,
@@ -148,6 +103,34 @@ pub fn save_inverted_index_to_json(
     let index_file = File::create(index_path)?;
     serde_json::to_writer(BufWriter::new(index_file), inverted_index_data)?;
     Ok(())
+}
+
+pub fn add_to_model(
+    inverted_index_data: &mut InvertedIndexData,
+    path: &PathBuf,
+    document: &Vec<char>,
+) -> usize {
+    let mut count = 0;
+    for token in Lexer::new(&document) {
+        if let Some(_) = inverted_index_data.index_freq.get_mut(&token) {
+            let posting = inverted_index_data
+                .index_freq
+                .entry(token)
+                .or_insert_with(HashMap::new);
+
+            *posting.entry(path.clone()).or_insert(0) += 1;
+        } else {
+            let mut temp = Posting::new();
+            temp.insert(path.clone(), 1);
+            inverted_index_data
+                .index_freq
+                .insert(token.to_string(), temp);
+        }
+
+        count += 1;
+    }
+
+    count
 }
 
 pub fn save_folder_to_index_data_model(
@@ -179,61 +162,9 @@ pub fn save_folder_to_index_data_model(
                     }
                 };
 
-                let mut count = 0;
-                for token in Lexer::new(&document) {
-                    if let Some(_) = inverted_index_data.index_freq.get_mut(&token) {
-                        let posting = inverted_index_data
-                            .index_freq
-                            .entry(token)
-                            .or_insert_with(HashMap::new);
-
-                        *posting.entry(path.clone()).or_insert(0) += 1;
-                    } else {
-                        let mut temp = Posting::new();
-                        temp.insert(path.clone(), 1);
-                        inverted_index_data
-                            .index_freq
-                            .insert(token.to_string(), temp);
-                    }
-
-                    count += 1;
-                }
-
+                let count = add_to_model(inverted_index_data, &path, &document);
                 inverted_index_data.doc_len.insert(path.clone(), count);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-pub fn save_folder_to_model(dir_path: &str, index_data: &mut IndexData) -> io::Result<()> {
-    let dir = fs::read_dir(dir_path)?;
-    for entry in dir {
-        let path = entry?.path();
-
-        if path.is_dir() {
-            save_folder_to_model(path.to_str().unwrap(), index_data)?;
-        } else {
-            let extension = match path.extension() {
-                Some(ext) => ext.to_str().unwrap_or("unknown"),
-                None => {
-                    continue;
-                }
-            };
-
-            let mut document: Vec<char> = Vec::new();
-            if extension == "xml" || extension == "xhtml" {
-                document = match read_entire_xml_file(&path) {
-                    Ok(text) => {
-                        println!("converted the file: {}", path.display());
-                        text.chars().collect::<Vec<_>>()
-                    }
-                    Err(_) => {
-                        continue;
-                    }
-                };
-            } else if extension == "pdf" {
+            } else if extenstion == "pdf" {
                 document = match read_entire_pdf_file(&path) {
                     Ok(text) => {
                         println!("converted the file: {}", path.display());
@@ -243,31 +174,26 @@ pub fn save_folder_to_model(dir_path: &str, index_data: &mut IndexData) -> io::R
                         continue;
                     }
                 };
-            } else if extension == "txt" || extension == "md" {
+
+                let count = add_to_model(inverted_index_data, &path, &document);
+                inverted_index_data.doc_len.insert(path.clone(), count);
+            } else if extenstion == "md" || extenstion == "txt" {
                 document = match fs::read_to_string(&path) {
                     Ok(text) => {
                         println!("converted the file: {}", path.display());
                         text.chars().collect::<Vec<_>>()
                     }
-
                     Err(_) => {
                         continue;
                     }
                 };
-            }
 
-            let mut tf = TermFreq::new();
-
-            for term in Lexer::new(&document) {
-                if let Some(freq) = tf.get_mut(&term) {
-                    *freq += 1;
-                } else {
-                    tf.insert(term, 1);
-                }
+                let count = add_to_model(inverted_index_data, &path, &document);
+                inverted_index_data.doc_len.insert(path.clone(), count);
             }
-            index_data.tfi.insert(path, tf);
         }
     }
+
     Ok(())
 }
 

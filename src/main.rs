@@ -29,17 +29,8 @@ fn entry() -> Result<(), ()> {
                 eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
             })?;
 
-            let mut index_data: model::IndexData = Default::default();
             let mut inverted_index_data: model::InvertedIndexData = Default::default();
 
-            model::save_folder_to_model(dir_path.as_str(), &mut index_data).map_err(|e| {
-                eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
-                ()
-            })?;
-            model::save_index_to_json(&mut index_data, "index.json").map_err(|e| {
-                eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
-                ()
-            })?;
             model::save_folder_to_index_data_model(dir_path.as_str(), &mut inverted_index_data)
                 .map_err(|e| {
                     eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
@@ -52,18 +43,17 @@ fn entry() -> Result<(), ()> {
                 })?;
         }
 
-        "search" => {
-            let index_path = args.next().ok_or_else(|| {
-                usage(&program);
-                eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
-            })?;
+        //"search" => {
+        //    let index_path = args.next().ok_or_else(|| {
+        //        usage(&program);
+        //        eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
+        //    })?;
 
-            model::check_index(&index_path).map_err(|e| {
-                eprintln!("ERROR: {e}");
-                ()
-            })?;
-        }
-
+        //    model::check_index(&index_path).map_err(|e| {
+        //        eprintln!("ERROR: {e}");
+        //        ()
+        //    })?;
+        //}
         "serve" => {
             let index_path = args.next().ok_or_else(|| {
                 usage(&program);

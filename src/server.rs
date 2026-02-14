@@ -28,7 +28,7 @@ fn calculate_tf(term: &str, d: &model::TermFreq) -> f32 {
 }
 
 pub fn serve_request(
-    index_data: &model::IndexData,
+    inverted_index_data: &model::InvertedIndexData,
     mut request: Request,
     idf_map: &HashMap<String, f32>,
 ) -> io::Result<()> {
@@ -44,18 +44,22 @@ pub fn serve_request(
             request.as_reader().read_to_end(&mut buf)?;
             let body = str::from_utf8(&buf).unwrap().chars().collect::<Vec<_>>();
 
-            let mut score: Vec<(&Path, f32)> = Vec::new();
-            for (path, tf_table) in &index_data.tfi {
-                let mut doc_score: f32 = 0.0;
-                for token in model::Lexer::new(&body) {
-                    let tf = calculate_tf(&token, &tf_table);
+            let mut scores: HashMap<&Path, f32> = HashMap::new();
+            for token in model::Lexer::new(&body) {
+                if let Some(posting) = inverted_index_data.index_freq.get(&token) {
+                    let idf = &*idf_map.get(&token).unwrap_or(&0f32);
 
-                    let idf = *idf_map.get(&token).unwrap_or(&0.0);
-                    doc_score += tf * idf;
+                    for (doc, freq) in posting {
+                        // TF using your stored doc length
+                        let len = *inverted_index_data.doc_len.get(doc).unwrap_or(&1) as f32;
+                        let tf = *freq as f32 / len;
+
+                        *scores.entry(doc.as_path()).or_insert(0.0) += tf * idf;
+                    }
                 }
-
-                score.push((&path, doc_score));
             }
+
+            let mut score: Vec<_> = scores.into_iter().collect();
             score.sort_by(|(_, a), (_, b)| b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal));
 
             let top_results: Vec<_> = score

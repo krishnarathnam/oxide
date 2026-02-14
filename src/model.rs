@@ -11,10 +11,20 @@ pub type TermFreq = HashMap<String, usize>;
 pub type DocFreq = HashMap<String, usize>;
 pub type TermFreqIndex = HashMap<PathBuf, TermFreq>;
 
+pub type Posting = HashMap<PathBuf, usize>;
+pub type InvertedIndex = HashMap<String, Posting>;
+pub type DocLen = HashMap<PathBuf, usize>;
+
 #[derive(Deserialize, Serialize, Default, Debug)]
 pub struct IndexData {
     pub tfi: TermFreqIndex,
     pub df: DocFreq,
+}
+
+#[derive(Deserialize, Serialize, Default, Debug)]
+pub struct InvertedIndexData {
+    pub index_freq: InvertedIndex,
+    pub doc_len: DocLen,
 }
 
 pub struct Lexer<'a> {
@@ -110,10 +120,90 @@ pub fn build_idf_index(index_data: &IndexData) -> HashMap<String, f32> {
     idf_map
 }
 
+pub fn build_idf_inverted_index(inverted_index_data: &InvertedIndexData) -> HashMap<String, f32> {
+    let mut idf_map: HashMap<String, f32> = HashMap::new();
+    let total_doc = inverted_index_data.doc_len.len() as f32;
+
+    for (term, posting) in &inverted_index_data.index_freq {
+        let df = posting.len() as f32;
+        let score = (total_doc / df).log10();
+
+        idf_map.insert(term.clone(), score);
+    }
+
+    idf_map
+}
+
 pub fn save_index_to_json(index_data: &mut IndexData, index_path: &str) -> io::Result<()> {
     build_df_index(index_data);
     let index_file = File::create(index_path)?;
     serde_json::to_writer(BufWriter::new(index_file), index_data)?;
+    Ok(())
+}
+
+pub fn save_inverted_index_to_json(
+    inverted_index_data: &mut InvertedIndexData,
+    index_path: &str,
+) -> io::Result<()> {
+    let index_file = File::create(index_path)?;
+    serde_json::to_writer(BufWriter::new(index_file), inverted_index_data)?;
+    Ok(())
+}
+
+pub fn save_folder_to_index_data_model(
+    dir_path: &str,
+    inverted_index_data: &mut InvertedIndexData,
+) -> io::Result<()> {
+    let dir = fs::read_dir(dir_path)?;
+
+    for entry in dir {
+        let path = entry?.path();
+
+        if path.is_dir() {
+            save_folder_to_index_data_model(path.to_str().unwrap(), inverted_index_data)?;
+        } else {
+            let extenstion = match path.extension() {
+                Some(ext) => ext.to_str().unwrap(),
+                None => continue,
+            };
+
+            let document: Vec<char>;
+            if extenstion == "xhtml" || extenstion == "xml" {
+                document = match read_entire_xml_file(&path) {
+                    Ok(text) => {
+                        println!("converted the file: {}", path.display());
+                        text.chars().collect::<Vec<_>>()
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                };
+
+                let mut count = 0;
+                for token in Lexer::new(&document) {
+                    if let Some(_) = inverted_index_data.index_freq.get_mut(&token) {
+                        let posting = inverted_index_data
+                            .index_freq
+                            .entry(token)
+                            .or_insert_with(HashMap::new);
+
+                        *posting.entry(path.clone()).or_insert(0) += 1;
+                    } else {
+                        let mut temp = Posting::new();
+                        temp.insert(path.clone(), 1);
+                        inverted_index_data
+                            .index_freq
+                            .insert(token.to_string(), temp);
+                    }
+
+                    count += 1;
+                }
+
+                inverted_index_data.doc_len.insert(path.clone(), count);
+            }
+        }
+    }
+
     Ok(())
 }
 

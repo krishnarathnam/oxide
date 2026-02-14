@@ -30,6 +30,7 @@ fn entry() -> Result<(), ()> {
             })?;
 
             let mut index_data: model::IndexData = Default::default();
+            let mut inverted_index_data: model::InvertedIndexData = Default::default();
 
             model::save_folder_to_model(dir_path.as_str(), &mut index_data).map_err(|e| {
                 eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
@@ -39,6 +40,16 @@ fn entry() -> Result<(), ()> {
                 eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
                 ()
             })?;
+            model::save_folder_to_index_data_model(dir_path.as_str(), &mut inverted_index_data)
+                .map_err(|e| {
+                    eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
+                    ()
+                })?;
+            model::save_inverted_index_to_json(&mut inverted_index_data, "inverted_index.json")
+                .map_err(|e| {
+                    eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
+                    ()
+                })?;
         }
 
         "search" => {
@@ -59,13 +70,13 @@ fn entry() -> Result<(), ()> {
                 eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
             })?;
 
-            let index_file = File::open(index_path).map_err(|e| {
+            let inverted_index_file = File::open(index_path).map_err(|e| {
                 eprintln!("ERROR: cannot open index file: {e}");
                 ()
             })?;
 
-            let index_data: model::IndexData =
-                serde_json::from_reader(index_file).map_err(|e| {
+            let inverted_index_data: model::InvertedIndexData =
+                serde_json::from_reader(inverted_index_file).map_err(|e| {
                     eprintln!("ERROR: cannot parse index file: {e}");
                     ()
                 })?;
@@ -75,10 +86,11 @@ fn entry() -> Result<(), ()> {
                 eprintln!("ERROR: Could not start server at {address}: {e}");
                 ()
             })?;
-            let idf_map = model::build_idf_index(&index_data);
+            let idf_map = model::build_idf_inverted_index(&inverted_index_data);
+
             println!("Running server at: http://{address}");
             for request in server.incoming_requests() {
-                let _ = server::serve_request(&index_data, request, &idf_map);
+                let _ = server::serve_request(&inverted_index_data, request, &idf_map);
             }
         }
 

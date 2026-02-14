@@ -40,22 +40,23 @@ pub fn serve_request(
 
     match (request.method(), request.url()) {
         (Method::Post, "/api/search") => {
-            let mut buf1: Vec<u8> = Vec::new();
-            request.as_reader().read_to_end(&mut buf1)?;
-            let body = str::from_utf8(&buf1).unwrap().chars().collect::<Vec<_>>();
+            let mut buf: Vec<u8> = Vec::new();
+            request.as_reader().read_to_end(&mut buf)?;
+            let body = str::from_utf8(&buf).unwrap().chars().collect::<Vec<_>>();
 
             let mut score: Vec<(&Path, f32)> = Vec::new();
             for (path, tf_table) in &index_data.tfi {
                 let mut doc_score: f32 = 0.0;
                 for token in model::Lexer::new(&body) {
                     let tf = calculate_tf(&token, &tf_table);
+
                     let idf = *idf_map.get(&token).unwrap_or(&0.0);
                     doc_score += tf * idf;
                 }
 
                 score.push((&path, doc_score));
             }
-            score.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            score.sort_by(|(_, a), (_, b)| b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal));
 
             let top_results: Vec<_> = score
                 .iter()

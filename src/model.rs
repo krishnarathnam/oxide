@@ -1,6 +1,7 @@
+use poppler;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read};
 use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 use std::{fs, io};
@@ -124,16 +125,46 @@ pub fn save_folder_to_model(dir_path: &str, index_data: &mut IndexData) -> io::R
         if path.is_dir() {
             save_folder_to_model(path.to_str().unwrap(), index_data)?;
         } else {
-            let document = match read_entire_xml_file(&path) {
-                Ok(text) => {
-                    println!("converted the file: {}", path.display());
-                    text.chars().collect::<Vec<_>>()
-                }
-                Err(_) => {
-                    println!("Skipping non-XML file {}", path.display());
+            let extension = match path.extension() {
+                Some(ext) => ext.to_str().unwrap_or("unknown"),
+                None => {
                     continue;
                 }
             };
+
+            let mut document: Vec<char> = Vec::new();
+            if extension == "xml" || extension == "xhtml" {
+                document = match read_entire_xml_file(&path) {
+                    Ok(text) => {
+                        println!("converted the file: {}", path.display());
+                        text.chars().collect::<Vec<_>>()
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                };
+            } else if extension == "pdf" {
+                document = match read_entire_pdf_file(&path) {
+                    Ok(text) => {
+                        println!("converted the file: {}", path.display());
+                        text.chars().collect::<Vec<_>>()
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                };
+            } else if extension == "txt" || extension == "md" {
+                document = match fs::read_to_string(&path) {
+                    Ok(text) => {
+                        println!("converted the file: {}", path.display());
+                        text.chars().collect::<Vec<_>>()
+                    }
+
+                    Err(_) => {
+                        continue;
+                    }
+                };
+            }
 
             let mut tf = TermFreq::new();
 
@@ -150,14 +181,42 @@ pub fn save_folder_to_model(dir_path: &str, index_data: &mut IndexData) -> io::R
     Ok(())
 }
 
+fn read_entire_pdf_file(file_path: &Path) -> io::Result<String> {
+    // Fixed: use io::Result
+    let mut content = Vec::new();
+
+    // File I/O - now ? works automatically
+    File::open(file_path)?.read_to_end(&mut content)?;
+
+    // Parse PDF document
+    let pdf = poppler::PopplerDocument::new_from_data(&mut content, None).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Poppler error {}: {}", file_path.display(), e),
+        )
+    })?; // Convert poppler error to io::Error
+
+    let mut result = String::new();
+
+    // Extract text from all pages
+    let n = pdf.get_n_pages();
+    for i in 0..n {
+        if let Some(page) = pdf.get_page(i) {
+            if let Some(text) = page.get_text() {
+                result.push_str(&text);
+                result.push(' ');
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 fn read_entire_xml_file<P: AsRef<Path>>(file_path: P) -> io::Result<String> {
     let file = File::open(file_path)?;
     let er = EventReader::new(BufReader::new(file));
     let mut content = String::new();
 
-    if content.starts_with('\u{feff}') {
-        content = content.replacen('\u{feff}', "", 1);
-    }
     for event in er {
         let event = event.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 

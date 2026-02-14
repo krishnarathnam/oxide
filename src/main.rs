@@ -8,7 +8,6 @@ fn usage(program: &str) {
     eprintln!("Usage: {program} [SUBCOMMAND] [OPTIONS]");
     eprintln!("Subcommands:");
     eprintln!("    index <folder>                 Turn the folder and file into index.json");
-    eprintln!("    search <folder>                search how many files are in index.json");
     eprintln!("    serve <folder> [address]       start local HTTP server with Web Interface");
 }
 
@@ -36,24 +35,14 @@ fn entry() -> Result<(), ()> {
                     eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
                     ()
                 })?;
-            model::save_inverted_index_to_json(&mut inverted_index_data, "inverted_index.json")
-                .map_err(|e| {
+            model::save_inverted_index_to_json(&mut inverted_index_data, "index.json").map_err(
+                |e| {
                     eprintln!("ERROR: cannot read directory `{dir_path}`: {e}");
                     ()
-                })?;
+                },
+            )?;
         }
 
-        //"search" => {
-        //    let index_path = args.next().ok_or_else(|| {
-        //        usage(&program);
-        //        eprintln!("ERROR: no directory is provided for {subcommand} subcommand");
-        //    })?;
-
-        //    model::check_index(&index_path).map_err(|e| {
-        //        eprintln!("ERROR: {e}");
-        //        ()
-        //    })?;
-        //}
         "serve" => {
             let index_path = args.next().ok_or_else(|| {
                 usage(&program);

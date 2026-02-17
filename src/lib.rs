@@ -6,8 +6,8 @@ pub enum ShellCommand<'a> {
     Exit,
     Echo(Vec<&'a str>),
     Pwd,
-    Type(&'a str),
-    Cd(&'a str),
+    Type(&'a str, Vec<&'a str>),
+    Cd(&'a str, Vec<&'a str>),
     External(&'a str, Vec<&'a str>),
     Empty,
 }
@@ -20,12 +20,12 @@ impl<'a> ShellCommand<'a> {
             "pwd" => ShellCommand::Pwd,
             "type" => tokens
                 .get(1)
-                .map(|x| ShellCommand::Type(x))
+                .map(|x| ShellCommand::Type(x, tokens[1..].to_vec()))
                 .unwrap_or(ShellCommand::Empty),
 
             "cd" => tokens
                 .get(1)
-                .map(|x| ShellCommand::Cd(x))
+                .map(|x| ShellCommand::Cd(x, tokens[1..].to_vec()))
                 .unwrap_or(ShellCommand::Empty),
 
             cmd => ShellCommand::External(cmd, tokens[1..].to_vec()),
@@ -39,11 +39,16 @@ impl<'a> ShellCommand<'a> {
             ShellCommand::Exit => return false,
 
             ShellCommand::Echo(args) => {
-                let (real_args, redirect) = split_redirect(&args);
-
+                let (real_args, redirect, is_stderr) = split_redirect(&args);
                 let output = real_args.join(" ");
-
-                write_or_print(&output, redirect);
+                if is_stderr {
+                    println!("{output}");
+                    if let Some(file) = redirect {
+                        std::fs::write(file, b"").unwrap();
+                    }
+                } else {
+                    write_or_print(&output.to_string(), redirect);
+                }
             }
 
             ShellCommand::Pwd => {
@@ -52,8 +57,9 @@ impl<'a> ShellCommand<'a> {
                 write_or_print(&output, None);
             }
 
-            ShellCommand::Type(name) => {
+            ShellCommand::Type(name, args) => {
                 let output;
+                let (_, file, print_error) = split_redirect(&args);
                 if is_builtin(name) {
                     output = format!("{name} is a shell builtin");
                 } else if let Some(exe) = pathsearch::find_executable_in_path(name) {
@@ -61,10 +67,15 @@ impl<'a> ShellCommand<'a> {
                 } else {
                     output = format!("{name}: not found");
                 }
-                write_or_print(&output, None);
+                if print_error {
+                    write_or_print_error(&output, file);
+                } else {
+                    write_or_print(&output, None);
+                }
             }
 
-            ShellCommand::Cd(path) => {
+            ShellCommand::Cd(path, args) => {
+                let (_, file, print_error) = split_redirect(&args);
                 let target = if path == "~" {
                     env::var("HOME").unwrap_or_else(|_| "/".into())
                 } else {
@@ -73,34 +84,58 @@ impl<'a> ShellCommand<'a> {
 
                 if Path::new(&target).is_dir() {
                     if let Err(e) = env::set_current_dir(&target) {
-                        eprintln!("cd: {e}");
+                        if print_error {
+                            let output = format!("cd: {e}");
+                            write_or_print_error(&output, file);
+                        } else {
+                            eprintln!("cd: {e}");
+                        }
                     }
                 } else {
-                    println!("cd: {}: No such file or directory", target);
+                    if print_error {
+                        let output = format!("cd: {}: No such file or directory", target);
+                        write_or_print_error(&output, file);
+                    } else {
+                        eprintln!("cd: {}: No such file or directory", target);
+                    }
                 }
             }
 
             ShellCommand::External(cmd, args) => {
-                let (real_args, redirect) = split_redirect(&args);
+                let (real_args, redirect, print_error) = split_redirect(&args);
 
                 if pathsearch::find_executable_in_path(cmd).is_none() {
                     println!("{cmd}: command not found");
                     return true;
                 }
 
-                let out = std::process::Command::new(cmd)
+                let output = std::process::Command::new(cmd)
                     .args(&real_args)
                     .output()
                     .unwrap();
 
-                if let Some(file) = redirect {
-                    let mut f = std::fs::File::create(file).unwrap();
-                    f.write_all(&out.stdout).unwrap();
-
-                    eprint!("{}", String::from_utf8_lossy(&out.stderr));
-                } else {
-                    print!("{}", String::from_utf8_lossy(&out.stdout));
-                    eprint!("{}", String::from_utf8_lossy(&out.stderr));
+                match (redirect, print_error) {
+                    (Some(file), true) => {
+                        // 2> : stdout→terminal, stderr→file
+                        print!("{}", String::from_utf8_lossy(&output.stdout));
+                        if !output.stderr.is_empty() {
+                            std::fs::write(file, &output.stderr).unwrap();
+                        }
+                    }
+                    (Some(file), false) => {
+                        // > : stdout→file, stderr→terminal
+                        std::fs::write(file, &output.stdout).unwrap();
+                        if !output.stderr.is_empty() {
+                            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                        }
+                    }
+                    (None, _) => {
+                        // No redirect
+                        print!("{}", String::from_utf8_lossy(&output.stdout));
+                        if !output.stderr.is_empty() {
+                            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                        }
+                    }
                 }
             }
 
@@ -160,16 +195,30 @@ pub fn tokenize(input: &str) -> Vec<String> {
     args
 }
 
-fn split_redirect<'a>(args: &'a [&'a str]) -> (Vec<&'a str>, Option<&'a str>) {
-    if let Some(pos) = args.iter().position(|a| *a == ">" || *a == "1>") {
+fn split_redirect<'a>(args: &'a [&'a str]) -> (Vec<&'a str>, Option<&'a str>, bool) {
+    if let Some(pos) = args.iter().position(|a| *a == "2>") {
         if pos + 1 < args.len() {
-            return (args[..pos].to_vec(), Some(args[pos + 1]));
+            return (args[..pos].to_vec(), Some(args[pos + 1]), true);
         }
     }
-    (args.to_vec(), None)
+    if let Some(pos) = args.iter().position(|a| *a == ">" || *a == "1>") {
+        if pos + 1 < args.len() {
+            return (args[..pos].to_vec(), Some(args[pos + 1]), false);
+        }
+    }
+    (args.to_vec(), None, false)
 }
 
 fn write_or_print(text: &String, redirect: Option<&str>) {
+    if let Some(file) = redirect {
+        let mut f = std::fs::File::create(file).unwrap();
+        writeln!(f, "{text}").unwrap();
+    } else {
+        println!("{text}");
+    }
+}
+
+fn write_or_print_error(text: &String, redirect: Option<&str>) {
     if let Some(file) = redirect {
         let mut f = std::fs::File::create(file).unwrap();
         writeln!(f, "{text}").unwrap();
